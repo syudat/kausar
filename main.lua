@@ -1,4 +1,4 @@
---- tunggu pembaharuan selanjutnya
+--- tunggu pembaharuan selanjutnya teman teman
 os = os or {
   time = function()
     return math.floor(java.lang.System.currentTimeMillis() / 1000)
