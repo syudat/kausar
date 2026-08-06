@@ -1,3 +1,4 @@
+---hai
 os = os or {
   time = function()
     return math.floor(java.lang.System.currentTimeMillis() / 1000)
