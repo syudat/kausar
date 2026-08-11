@@ -1,21 +1,6 @@
----hai
-os = os or {
-  time = function()
-    return math.floor(java.lang.System.currentTimeMillis() / 1000)
-  end,
-  date = function(fmt, t)
-    local millis = (t or (java.lang.System.currentTimeMillis() / 1000)) * 1000
-    return tostring(java.text.SimpleDateFormat(fmt or "yyyy-MM-dd HH:mm:ss").format(java.util.Date(millis)))
-  end,
-  clock = function()
-    return java.lang.System.nanoTime() / 1000000000
-  end
-}
-
 require "import"
 import "android.speech.SpeechRecognizer"
 import "android.speech.RecognizerIntent"
-import "android.speech.tts.TextToSpeech"
 import "android.widget.*"
 import "android.view.*"
 import "android.view.accessibility.AccessibilityNodeInfo"
@@ -23,9 +8,12 @@ import "android.app.*"
 import "android.content.*"
 import "android.net.Uri"
 import "java.io.File"
-import "android.os.*"
-import "android.os.Build"
+import "android.os.Handler"
+import "android.os.Looper"
+import "android.os.Bundle"
+import "android.os.Environment"
 import "java.util.Locale"
+import "android.os.Vibrator"
 import "android.graphics.Typeface"
 import "com.androlua.Http"
 import "android.app.AlertDialog"
@@ -39,41 +27,6 @@ local function setPref(k, v) prefs.edit().putString(k, tostring(v)).apply() end
 local function getBool(k) return prefs.getBoolean(k, false) end
 local function setBool(k, v) prefs.edit().putBoolean(k, v).apply() end
 local function pesan(teks) Toast.makeText(service, teks, Toast.LENGTH_SHORT).show() end
-
-local ttsGlobal = nil
-local function speakText(teks)
-  if not teks or teks == "" then return end
-  local engine = getPref("tts_engine", "")
-  local pitch = (tonumber(getPref("tts_pitch", "100")) or 100) / 100
-  local rate = (tonumber(getPref("tts_rate", "100")) or 100) / 100
-  
-  local listener = luajava.createProxy("android.speech.tts.TextToSpeech$OnInitListener", {
-    onInit = function(status)
-      if status == TextToSpeech.SUCCESS then
-        if ttsGlobal then
-          ttsGlobal.setPitch(pitch)
-          ttsGlobal.setSpeechRate(rate)
-          ttsGlobal.setLanguage(Locale("id", "ID"))
-          if Build.VERSION.SDK_INT >= 21 then
-            ttsGlobal.speak(teks, TextToSpeech.QUEUE_FLUSH, nil, "tts_speak_id")
-          else
-            ttsGlobal.speak(teks, TextToSpeech.QUEUE_FLUSH, nil)
-          end
-        end
-      end
-    end
-  })
-
-  pcall(function()
-    if ttsGlobal then ttsGlobal.shutdown() end
-  end)
-
-  if engine ~= "" then
-    ttsGlobal = TextToSpeech(service, listener, engine)
-  else
-    ttsGlobal = TextToSpeech(service, listener)
-  end
-end
 
 local function vibrate(ms)
   if not getBool("use_vibration") then return end
@@ -100,78 +53,16 @@ local function showProgress(msg)
   return pd
 end
 
-local function showPengaturanTTS()
-  local layT = LinearLayout(service).setOrientation(1).setPadding(40,40,40,40)
-  layT.addView(TextView(service).setText("Pilih Mesin TTS:").setTypeface(Typeface.DEFAULT_BOLD))
-  
-  local engineNames = {}
-  local enginePkgs = {}
-  local dummyTts = TextToSpeech(service, nil)
-  local engines = dummyTts.getEngines()
-  if engines then
-    for i = 0, engines.size() - 1 do
-      local eng = engines.get(i)
-      table.insert(engineNames, tostring(eng.label))
-      table.insert(enginePkgs, tostring(eng.name))
-    end
-  end
-  pcall(function() dummyTts.shutdown() end)
-  
-  if #engineNames == 0 then
-    table.insert(engineNames, "Default System TTS")
-    table.insert(enginePkgs, "")
-  end
-
-  local spinEngine = Spinner(service).setAdapter(ArrayAdapter(service, android.R.layout.simple_spinner_dropdown_item, engineNames))
-  local curEngine = getPref("tts_engine", "")
-  for i, pkg in ipairs(enginePkgs) do
-    if pkg == curEngine then spinEngine.setSelection(i-1) break end
-  end
-  layT.addView(spinEngine)
-
-  local curPitch = tonumber(getPref("tts_pitch", "100")) or 100
-  local txtPitch = TextView(service).setText("\nNada (Pitch): " .. string.format("%.1f", curPitch / 100) .. "x")
-  local skPitch = SeekBar(service).setMax(200)
-  skPitch.setProgress(curPitch)
-  skPitch.setOnSeekBarChangeListener{onProgressChanged=function(bar, prog)
-    if prog < 20 then prog = 20 end
-    txtPitch.setText("\nNada (Pitch): " .. string.format("%.1f", prog / 100) .. "x")
-    setPref("tts_pitch", tostring(prog))
-  end}
-  layT.addView(txtPitch)
-  layT.addView(skPitch)
-
-  local curRate = tonumber(getPref("tts_rate", "100")) or 100
-  local txtRate = TextView(service).setText("\nKecepatan (Speed): " .. string.format("%.1f", curRate / 100) .. "x")
-  local skRate = SeekBar(service).setMax(200)
-  skRate.setProgress(curRate)
-  skRate.setOnSeekBarChangeListener{onProgressChanged=function(bar, prog)
-    if prog < 20 then prog = 20 end
-    txtRate.setText("\nKecepatan (Speed): " .. string.format("%.1f", prog / 100) .. "x")
-    setPref("tts_rate", tostring(prog))
-  end}
-  layT.addView(txtRate)
-  layT.addView(skRate)
-
-  showLocked(AlertDialog.Builder(service).setTitle("Pengaturan TTS").setView(layT).setPositiveButton("Simpan", function()
-    local selectedIdx = spinEngine.getSelectedItemPosition() + 1
-    if enginePkgs[selectedIdx] then
-      setPref("tts_engine", enginePkgs[selectedIdx])
-    end
-    pesan("Pengaturan TTS disimpan!")
-  end).setNegativeButton("Batal", nil))
-end
-
 local function applySingkatan(teks)
   if not getBool("use_singkatan") then return teks end
-  local daftarAngka2 = {"sama", "teman", "jalan", "makan", "hati", "hati%-hati"}
+  local daftarAngka2 = {"sama", "teman", "jalan", "makan", "hati", "hati-hati"}
   for _, kata in ipairs(daftarAngka2) do
     teks = teks:gsub("%f[%a]"..kata.."%s+"..kata.."%f[%A]", kata.."2")
     teks = teks:gsub("%f[%a]"..kata.."%-"..kata.."%f[%A]", kata.."2")
   end
   local s = {
     ["yang"] = "yg", ["dengan"] = "dg", ["untuk"] = "utk", ["tidak"] = "tdk",
-    ["ngggak"] = "gk", ["kamu"] = "km", ["saya"] = "sy", ["sudah"] = "sdh",
+    ["nggak"] = "gk", ["kamu"] = "km", ["saya"] = "sy", ["sudah"] = "sdh",
     ["bang"] = "bg", ["kakak"] = "kk", ["kenapa"] = "knp", ["gimana"] = "gmn",
     ["sekarang"] = "skrg", ["banget"] = "bgt", ["tapi"] = "tp", ["kalo"] = "kl",
     ["terima kasih"] = "tks",
@@ -207,12 +98,7 @@ local function processText(userInput, callback)
   local function terapkanSemuaGaya(teks)
     if getBool("use_kamus") then
       local s, data = pcall(cjson.decode, getPref("kamus_json", "{}"))
-      if s and type(data) == "table" then 
-        for k, v in pairs(data) do 
-          local kEsc = k:gsub("([^%w])", "%%%1")
-          teks = teks:gsub("%f[%a]"..kEsc.."%f[%A]", v) 
-        end 
-      end
+      if s then for k, v in pairs(data) do teks = teks:gsub("%f[%a]"..k.."%f[%A]", v) end end
     end
     teks = applySingkatan(teks)
     teks = applyGaya(teks)
@@ -234,7 +120,7 @@ local function processText(userInput, callback)
     local customAktif = getBool("use_custom_instr")
     local customPrompt = getPref("active_custom_prompt", "")
     local stylePrompt = ""
-    if gayaAktif then
+    if gayaAktif == true then
       if gayaBicara == "Rewel (Muntah)" then stylePrompt = "ADOPT PERSONA: Nauseous and about to vomit. Interject 'Huekk...', 'Hoekk...' naturally."
       elseif gayaBicara == "Mode Toxic" then stylePrompt = "ADOPT PERSONA: Extremely TOXIC and SAVAGE Indonesian street slang. Be very aggressive."
       elseif gayaBicara == "Menangis" then stylePrompt = "ADOPT PERSONA: Crying uncontrollably. Insert 'huhu...', 'hiks...' deep grief."
@@ -302,7 +188,6 @@ local function processText(userInput, callback)
       if eType == "Cewek" then emojiInstr = "Add 2 relevant feminine emojis."
       elseif eType == "Cowok" then emojiInstr = "Add 2 relevant masculine emojis."
       elseif eType == "Hujan" then emojiInstr = "Add 2 rain/sadness emojis."
-      elseif eType == "Ceria" then emojiInstr = "Add 2 cheerful/happy emojis."
       else emojiInstr = "Add 2 context-appropriate emojis." end
       local pos = (ePos == "Awal Kalimat") and "start" or "end"
       systemRule = systemRule .. " EMOJI: " .. emojiInstr .. " Place at " .. pos .. " of text."
@@ -322,22 +207,12 @@ local function processText(userInput, callback)
       local model = getPref("gemini_model", "gemini-1.5-flash")
       local payload = model:find("gemma") and { contents = { { parts = { { text = fullPrompt } } } } } or { system_instruction = { parts = { { text = systemRule } } }, contents = { { parts = { { text = inputAman } } } } }
       Http.post("https://generativelanguage.googleapis.com/v1beta/models/"..model..":generateContent?key="..apiKey, cjson.encode(payload), {["Content-Type"]="application/json"}, function(c, content)
-        if c == 200 then 
-          local s, res = pcall(cjson.decode, content) 
-          if s and res and res.candidates and res.candidates[1] and res.candidates[1].content and res.candidates[1].content.parts and res.candidates[1].content.parts[1] then 
-            handleAIResult(res.candidates[1].content.parts[1].text) 
-          end 
-        end
+        if c == 200 then local s, res = pcall(cjson.decode, content) if s and res.candidates then handleAIResult(res.candidates[1].content.parts[1].text) end end
       end)
     elseif provider == "Groq" then
       local apiKey = getPref("groq_api_key", "")
       Http.post("https://api.groq.com/openai/v1/chat/completions", cjson.encode({model=getPref("groq_model", "llama-3.3-70b-versatile"), messages={{role="system", content=systemRule},{role="user", content=inputAman}}, temperature=0.5}), {["Content-Type"]="application/json", ["Authorization"]="Bearer "..apiKey}, function(c, content)
-        if c == 200 then 
-          local s, res = pcall(cjson.decode, content) 
-          if s and res and res.choices and res.choices[1] and res.choices[1].message then 
-            handleAIResult(res.choices[1].message.content) 
-          end 
-        end
+        if c == 200 then local s, res = pcall(cjson.decode, content) if s and res.choices then handleAIResult(res.choices[1].message.content) end end
       end)
     elseif provider == "ChatGPT Gratis" then
       local url = "https://soffiapis.my.id/api/ai/gpt-free"
@@ -345,7 +220,7 @@ local function processText(userInput, callback)
       Http.post(url, payload, {["Content-Type"]="application/json"}, function(c, content)
         if c == 200 then
           local s, res = pcall(cjson.decode, content)
-          if s and res and res.data and res.data.reply then handleAIResult(res.data.reply) else handleAIResult(content) end
+          if s and res.data and res.data.reply then handleAIResult(res.data.reply) else handleAIResult(content) end
         else pesan("Gagal akses ChatGPT Gratis: " .. c) end
       end)
     end
@@ -356,17 +231,8 @@ local function processText(userInput, callback)
     local targetLangName = getPref("translate_lang", "English")
     local locales = Locale.getAvailableLocales()
     for i=0, #locales-1 do if locales[i].getDisplayName() == targetLangName then toLang = locales[i].getLanguage() if toLang == "zh" then toLang = "zh-CN" end break end end
-    local postBody = "client=gtx&sl=auto&tl="..toLang.."&dt=t&q="..Uri.encode(userInput)
-    Http.post("https://translate.googleapis.com/translate_a/single", postBody, {["User-Agent"]="Mozilla/5.0", ["Content-Type"]="application/x-www-form-urlencoded"}, function(code, content)
-      if code == 200 then 
-        local s, res = pcall(cjson.decode, content) 
-        if s and res and res[1] then 
-          local hasilTr = "" 
-          for i=1, #res[1] do if res[1][i][1] then hasilTr = hasilTr .. res[1][i][1] end end 
-          callback(terapkanSemuaGaya(hasilTr)) 
-          vibrate(60) 
-        end 
-      end
+    Http.get("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="..toLang.."&dt=t&q="..Uri.encode(userInput), nil, "UTF-8", {["User-Agent"]="Mozilla/5.0"}, function(code, content)
+      if code == 200 then local s, res = pcall(cjson.decode, content) if s and res[1] then local hasilTr = "" for i=1, #res[1] do if res[1][i][1] then hasilTr = hasilTr .. res[1][i][1] end end callback(terapkanSemuaGaya(hasilTr)) vibrate(60) end end
     end)
   else
     if getBool("use_ai_process") then eksekusiAI(userInput) else callback(terapkanSemuaGaya(userInput)) end
@@ -440,8 +306,7 @@ function showMain()
     local spinModel = Spinner(service)
     local function updateModelList()
       local p = providerList[spinProv.getSelectedItemPosition()+1]
-      local s, models = pcall(cjson.decode, getPref(p:lower().."_models_list", "[]"))
-      if not s or type(models) ~= "table" then models = {} end
+      local models = cjson.decode(getPref(p:lower().."_models_list", "[]"))
       spinModel.setAdapter(ArrayAdapter(service, android.R.layout.simple_spinner_dropdown_item, models))
       local curModel = getPref(p:lower().."_model", "")
       for i, m in ipairs(models) do if m == curModel then spinModel.setSelection(i-1) break end end
@@ -484,7 +349,7 @@ function showMain()
           pd.dismiss()
           if c == 200 then
             local s, res = pcall(cjson.decode, content)
-            if s and res and res.models then
+            if s and res.models then
               local nm = {}
               for _, m in pairs(res.models) do if m.name then local mn = m.name:lower() if mn:find("gemini") or mn:find("gemma") then table.insert(nm, m.name:gsub("models/", "")) end end end
               setPref("gemini_models_list", cjson.encode(nm)) updateModelList() pesan("Model Gemini diperbarui")
@@ -492,11 +357,11 @@ function showMain()
           else pesan("Gagal: "..c) end
         end)
       elseif p == "Groq" then
-        Http.get("https://api.groq.com/openai/v1/models", {["Authorization"]="Bearer "..apiKey}, function(c, content)
+        Http.get("https://api.groq.com/openai/v1/models", nil, "UTF-8", {["Authorization"]="Bearer "..apiKey}, function(c, content)
           pd.dismiss()
           if c == 200 then
             local s, res = pcall(cjson.decode, content)
-            if s and res and res.data then
+            if s and res.data then
               local nm = {}
               for _, m in ipairs(res.data) do table.insert(nm, m.id) end
               setPref("groq_models_list", cjson.encode(nm)) updateModelList() pesan("Model Groq diperbarui")
@@ -517,7 +382,7 @@ function showMain()
           if c == 200 then pesan("Kunci API valid!") else pesan("Kunci API error: "..c) end
         end)
       elseif p == "Groq" then
-        Http.get("https://api.groq.com/openai/v1/models", {["Authorization"]="Bearer "..apiKey}, function(c, content)
+        Http.get("https://api.groq.com/openai/v1/models", nil, "UTF-8", {["Authorization"]="Bearer "..apiKey}, function(c, content)
           pd.dismiss()
           if c == 200 then pesan("Kunci API valid!") else pesan("Kunci API error: "..c) end
         end)
@@ -534,6 +399,7 @@ function showMain()
       local intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
       intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       service.startActivity(intent)
+      -- Tutup dialog Fitur AI setelah membuka browser
       local parentDialog = layAI.getParent()
       while parentDialog and parentDialog.getClass().getName() ~= "android.app.Dialog" do parentDialog = parentDialog.getParent() end
       if parentDialog then parentDialog.dismiss() end
@@ -545,7 +411,7 @@ function showMain()
       if p ~= "ChatGPT Gratis" then
         setPref(p:lower().."_api_key", etApiKey.getText().toString())
         local selectedModel = tostring(spinModel.getSelectedItem())
-        if selectedModel and selectedModel ~= "" and selectedModel ~= "nil" then setPref(p:lower().."_model", selectedModel) end
+        if selectedModel and selectedModel ~= "" then setPref(p:lower().."_model", selectedModel) end
       end
       pesan("Pengaturan AI disimpan!")
     end
@@ -560,10 +426,8 @@ function showMain()
     local layUtama = LinearLayout(service).setOrientation(1).setPadding(40,40,40,40)
     scroll.addView(layUtama)
     local cacheBahasa = getPref("daftar_bahasa_sinkron", "[]")
-    local s, DAFTAR_BAHASA = pcall(cjson.decode, cacheBahasa)
-    if not s or type(DAFTAR_BAHASA) ~= "table" or #DAFTAR_BAHASA == 0 then 
-      DAFTAR_BAHASA = {"Indonesia", "English", "Japanese", "Arabic", "Chinese"} 
-    end
+    local DAFTAR_BAHASA = cjson.decode(cacheBahasa)
+    if #DAFTAR_BAHASA == 0 then DAFTAR_BAHASA = {"Indonesia", "English", "Japanese", "Arabic", "Chinese"} end
     layUtama.addView(TextView(service).setText("Pengaturan Terjemahan:").setTypeface(Typeface.DEFAULT_BOLD))
     local swTrans = Switch(service).setText("Aktifkan Terjemahan").setChecked(getBool("use_translate"))
     swTrans.setOnCheckedChangeListener{onCheckedChanged=function(v, c) setBool("use_translate", c) end}
@@ -609,7 +473,7 @@ function showMain()
     local layE = LinearLayout(service).setOrientation(1).setPadding(40,40,40,40)
     local cbE = CheckBox(service).setText("Aktifkan Emoji").setChecked(getBool("use_emoji"))
     layE.addView(cbE)
-    local opsi = {"Awal Kalimat", "Akhir Kalimat", "Netral", "Cewek", "Cowok", "Hujan", "Ceria"}
+    local opsi = {"Awal Kalimat", "Akhir Kalimat", "Netral", "Cewek", "Cowok", "Hujan"}
     local spE = Spinner(service).setAdapter(ArrayAdapter(service, android.R.layout.simple_spinner_dropdown_item, opsi))
     local savedPos = getPref("emoji_pos", "Akhir Kalimat")
     for i, v in ipairs(opsi) do if v == savedPos then spE.setSelection(i-1) break end end
@@ -620,105 +484,55 @@ function showMain()
   end)
 
   addBtn("Instruksi Custom", function()
-    local s, data = pcall(cjson.decode, getPref("custom_prompts", "[]"))
-    if not s or type(data) ~= "table" then data = {} end
-    local activeIdx = tonumber(getPref("active_prompt_idx", "-1"))
-    local isEnabled = getBool("use_custom_instr")
-
-    local layout = LinearLayout(service).setOrientation(1).setPadding(20,20,20,20)
-    local cbAktif = CheckBox(service).setText("Aktifkan Instruksi Custom").setChecked(isEnabled)
-    cbAktif.setOnCheckedChangeListener{onCheckedChanged=function(v, c) setBool("use_custom_instr", c) end}
-    layout.addView(cbAktif)
-
-    local function updateAdapterItems(adapterObj)
-      local newItems = {}
-      for i, v in ipairs(data) do
-        local prefix = (i-1 == activeIdx) and "✓ " or "   "
-        table.insert(newItems, prefix .. v.name)
-      end
-      adapterObj.clear()
-      for _, item in ipairs(newItems) do adapterObj.add(item) end
-      adapterObj.notifyDataSetChanged()
-    end
-
-    local items = {}
-    for i, v in ipairs(data) do
-      local prefix = (i-1 == activeIdx) and "✓ " or "   "
-      table.insert(items, prefix .. v.name)
-    end
-    local adapter = ArrayAdapter(service, android.R.layout.simple_list_item_1, items)
-    local listInstr = ListView(service)
-    listInstr.setAdapter(adapter)
-    layout.addView(listInstr)
-
-    local btnTambah = Button(service).setText("Tambah Baru")
-    btnTambah.setOnClickListener(function()
-      local layAdd = LinearLayout(service).setOrientation(1).setPadding(40,20,40,20)
-      local en = EditText(service).setHint("Nama Instruksi") local ep = EditText(service).setHint("Isi Instruksi...")
-      layAdd.addView(en) layAdd.addView(ep)
-      showLocked(AlertDialog.Builder(service).setTitle("Tambah Instruksi").setView(layAdd).setPositiveButton("Simpan", function()
-        local name, prompt = en.getText().toString(), ep.getText().toString()
-        if name ~= "" and prompt ~= "" then
-          table.insert(data, {name=name, text=prompt})
-          setPref("custom_prompts", cjson.encode(data))
-          activeIdx = #data - 1
-          setPref("active_prompt_idx", tostring(activeIdx))
-          setPref("active_custom_prompt", prompt)
-          pesan("Instruksi baru ditambahkan dan dipilih")
-          updateAdapterItems(adapter)
-          setBool("use_custom_instr", true)
-          cbAktif.setChecked(true)
-        end
-      end).setNegativeButton("Batal", nil))
-    end)
-    layout.addView(btnTambah)
-
-    listInstr.setOnItemClickListener{onItemClick=function(parent, view, pos, id)
-      if activeIdx == pos then
-        setPref("active_prompt_idx", "-1") setPref("active_custom_prompt", "")
-        activeIdx = -1
-        cbAktif.setChecked(false)
-        setBool("use_custom_instr", false)
-        pesan("Instruksi tidak terpilih")
-      else
-        setPref("active_prompt_idx", tostring(pos)) setPref("active_custom_prompt", data[pos+1].text)
-        activeIdx = pos
-        setBool("use_custom_instr", true)
-        cbAktif.setChecked(true)
-        pesan("Terpilih: " .. data[pos+1].name)
-      end
-      updateAdapterItems(adapter)
-    end}
-
-    listInstr.setOnItemLongClickListener{onItemLongClick=function(parent, view, pos, id)
-      local idx = pos + 1
-      showLocked(AlertDialog.Builder(service).setTitle("Opsi Instruksi").setItems({"Edit", "Hapus"}, function(d2, i2)
-        if i2 == 0 then
-          local layEdit = LinearLayout(service).setOrientation(1).setPadding(40,20,40,20)
-          local en = EditText(service).setText(data[idx].name) local ep = EditText(service).setText(data[idx].text)
-          layEdit.addView(en) layEdit.addView(ep)
-          showLocked(AlertDialog.Builder(service).setTitle("Edit Instruksi").setView(layEdit).setPositiveButton("Simpan", function()
-            data[idx] = {name=en.getText().toString(), text=ep.getText().toString()} setPref("custom_prompts", cjson.encode(data))
-            if activeIdx == idx-1 then setPref("active_custom_prompt", data[idx].text) end
-            updateAdapterItems(adapter)
-          end).setNegativeButton("Batal", nil))
-        else
-          table.remove(data, idx) setPref("custom_prompts", cjson.encode(data))
-          if activeIdx == idx-1 then setPref("active_prompt_idx", "-1") setPref("active_custom_prompt", "") activeIdx = -1 end
-          updateAdapterItems(adapter)
-        end
-      end)) return true
-    end}
-
-    local dlg = AlertDialog.Builder(service)
-      .setTitle("Instruksi Custom")
-      .setView(layout)
-      .setPositiveButton("Simpan", function()
-        pesan("Instruksi disimpan")
+    local function showInstrManager()
+      local data = cjson.decode(getPref("custom_prompts", "[]"))
+      local activeIdx = tonumber(getPref("active_prompt_idx", "-1"))
+      local isEnabled = getBool("use_custom_instr")
+      local items, statusHeader = {}, isEnabled and " (Status: AKTIF)" or " (Status: MATI)"
+      for i, v in ipairs(data) do table.insert(items, (i-1 == activeIdx and "terpilih " or "tidak terpilih ") .. v.name) end
+      local b = AlertDialog.Builder(service).setTitle("Manajemen Instruksi" .. statusHeader)
+      if #items == 0 then b.setMessage("Belum ada instruksi.")
+      else b.setItems(items, function(d, i)
+        if activeIdx == i then setPref("active_prompt_idx", "-1") setPref("active_custom_prompt", "") pesan("Instruksi tidak terpilih")
+        else setPref("active_prompt_idx", i) setPref("active_custom_prompt", data[i+1].text) pesan("Terpilih: " .. data[i+1].name) setBool("use_custom_instr", true) end
+        d.dismiss() showInstrManager()
+      end) end
+      local btnStatus = isEnabled and "Matikan Fitur" or "Aktifkan Fitur"
+      b.setNeutralButton(btnStatus, function() setBool("use_custom_instr", not isEnabled) pesan(not isEnabled and "Instruksi Custom Aktif" or "Instruksi Custom Mati") showInstrManager() end)
+      b.setPositiveButton("Tambah Baru", function()
+        local layout = LinearLayout(service).setOrientation(1).setPadding(40,20,40,20)
+        local en = EditText(service).setHint("Nama Instruksi") local ep = EditText(service).setHint("Isi Instruksi...")
+        layout.addView(en) layout.addView(ep)
+        showLocked(AlertDialog.Builder(service).setTitle("Tambah Instruksi").setView(layout).setPositiveButton("Simpan", function()
+          local name, prompt = en.getText().toString(), ep.getText().toString()
+          if name ~= "" and prompt ~= "" then
+            table.insert(data, {name=name, text=prompt}) setPref("custom_prompts", cjson.encode(data))
+            setPref("active_prompt_idx", #data - 1) setPref("active_custom_prompt", prompt) setBool("use_custom_instr", true)
+            pesan("Berhasil disimpan dan diaktifkan") showInstrManager()
+          end
+        end).setNegativeButton("Batal", nil))
       end)
-      .setNegativeButton("Batal", nil)
-      .create()
-    showLocked(dlg)
+      b.setNegativeButton("Tutup", nil)
+      local dlg = b.create() showLocked(dlg)
+      local lv = dlg.getListView()
+      if lv then lv.setOnItemLongClickListener{onItemLongClick=function(p, v, i, id)
+        showLocked(AlertDialog.Builder(service).setTitle("Opsi Instruksi").setItems({"Edit", "Hapus"}, function(d2, i2)
+          if i2 == 0 then
+            local layout = LinearLayout(service).setOrientation(1).setPadding(40,20,40,20)
+            local en = EditText(service).setText(data[i+1].name) local ep = EditText(service).setText(data[i+1].text)
+            layout.addView(en) layout.addView(ep)
+            showLocked(AlertDialog.Builder(service).setTitle("Edit Instruksi").setView(layout).setPositiveButton("Simpan", function()
+              data[i+1] = {name=en.getText().toString(), text=ep.getText().toString()} setPref("custom_prompts", cjson.encode(data))
+              if activeIdx == i then setPref("active_custom_prompt", data[i+1].text) end showInstrManager()
+            end).setNegativeButton("Batal", nil))
+          else
+            table.remove(data, i+1) setPref("custom_prompts", cjson.encode(data))
+            if activeIdx == i then setPref("active_prompt_idx", "-1") setPref("active_custom_prompt", "") end showInstrManager()
+          end
+        end)) return true
+      end} end
+    end
+    showInstrManager()
   end)
 
   addBtn("Pengaturan Lanjutan", function()
@@ -739,18 +553,8 @@ function showMain()
       pesan(c and "Mode AI diaktifkan" or "Mode Offline diaktifkan")
     end}
     layFitur.addView(swModeAI)
-    addSwDialog("Mode Revisi Teks Terdahulu", "use_revision_mode")
     addSwDialog("Dikte Berkelanjutan", "use_continuous_mode")
-    
-    local layTTS = LinearLayout(service).setOrientation(0).setGravity(Gravity.CENTER_VERTICAL)
-    local swTTS = Switch(service).setText("Baca Hasil Suara (TTS)").setChecked(getBool("use_auto_tts"))
-    swTTS.setOnCheckedChangeListener{onCheckedChanged=function(v, c) setBool("use_auto_tts", c) end}
-    local btnSetTTS = Button(service).setText("Atur")
-    btnSetTTS.setOnClickListener(function() showPengaturanTTS() end)
-    layTTS.addView(swTTS, LinearLayout.LayoutParams(0, -2, 1.0))
-    layTTS.addView(btnSetTTS)
-    layFitur.addView(layTTS)
-
+    addSwDialog("Baca Hasil Suara (TTS)", "use_auto_tts")
     local layG = LinearLayout(service).setOrientation(1)
     local swGetar = Switch(service).setText("Fitur Getaran").setChecked(getBool("use_vibration"))
     local laySlider = LinearLayout(service).setOrientation(1).setPadding(20,10,20,10)
@@ -789,14 +593,13 @@ function showMain()
     local btnKAdd = Button(service).setText("+ Tambah Kata Baru")
     local listK = ListView(service)
     local function refK()
-      local s, d = pcall(cjson.decode, getPref("kamus_json", "{}"))
-      if not s or type(d) ~= "table" then d = {} end
+      local d = cjson.decode(getPref("kamus_json", "{}"))
       local keys, disp = {}, {}
       for k,v in pairs(d) do table.insert(keys, k) table.insert(disp, k.." -> "..v) end
       listK.setAdapter(ArrayAdapter(service, android.R.layout.simple_list_item_1, disp))
       return keys, d
     end
-    listK.setOnItemClickListener{onItemClick=function(parent, view, pos, id)
+    listK.setOnItemClickListener(function(parent, view, pos, id)
       local keys, data = refK() local kataAsli = keys[pos+1] local kataGanti = data[kataAsli]
       showLocked(AlertDialog.Builder(service).setTitle("Opsi: "..kataAsli).setItems({"Edit", "Hapus"}, function(d, i)
         if i == 0 then
@@ -810,13 +613,12 @@ function showMain()
           data[kataAsli] = nil setPref("kamus_json", cjson.encode(data)) pesan("Terhapus: "..kataAsli) refK()
         end
       end))
-    end}
+    end)
     btnKAdd.setOnClickListener(function()
       local e1 = EditText(service).setHint("Kata Asli") local e2 = EditText(service).setHint("Kata Pengganti")
       local tl = LinearLayout(service).setOrientation(1) tl.addView(e1) tl.addView(e2)
       showLocked(AlertDialog.Builder(service).setTitle("Tambah Kamus").setView(tl).setPositiveButton("Simpan", function()
-        local s, d = pcall(cjson.decode, getPref("kamus_json", "{}"))
-        if not s or type(d) ~= "table" then d = {} end
+        local d = cjson.decode(getPref("kamus_json", "{}"))
         d[e1.getText().toString()] = e2.getText().toString() setPref("kamus_json", cjson.encode(d)) refK()
       end).setNegativeButton("Batal", nil))
     end)
@@ -889,56 +691,9 @@ function showMain()
   spinAkhir.setOnItemSelectedListener{onItemSelected=function(parent, view, pos, id) setPref("akhir_kalimat_mode", opsiAkhir[pos+1]) end}
   layAkhir.addView(spinAkhir) lay.addView(layAkhir)
 
-  local btnDev = Button(service)
-  btnDev.setText("Tentang")
-  btnDev.setOnClickListener(function()
-    local devLay = LinearLayout(service).setOrientation(1).setPadding(40, 40, 40, 40)
-    devLay.addView(TextView(service).setText("Developer by al-kausar"))
-    devLay.addView(TextView(service).setText("Terima kasih telah menggunakan karya dari saya. Bersama kita dapat mengatasi tantangan apa pun dengan semangat yang tak tergoyahkan. Jadikan setiap langkah kecil sebagai batu loncatan menuju impian besar Anda. Ingat, keberhasilan bukanlah tujuan akhir, melainkan perjalanan yang penuh pembelajaran dan pertumbuhan. Tetaplah positif, berbagi inspirasi, dan dukung satu sama lain dalam setiap kesempatan. 🌟🚀"))
-    devLay.addView(TextView(service).setText(""))
-    local rowJoin = LinearLayout(service).setOrientation(0)
-    devLay.addView(rowJoin)
-    local btnJoin = Button(service).setText("Hubungi Kausar di WhatsApp")
-    btnJoin.setOnClickListener(function()
-      local i = Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/6282190840170"))
-      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-      service.startActivity(i)
-    end)
-    rowJoin.addView(btnJoin)
-    local devDialogB = AlertDialog.Builder(service).setTitle("Pengembang").setView(devLay)
-    devDialogB.setNegativeButton("Tutup", nil)
-    showLocked(devDialogB)
-  end)
-  lay.addView(btnDev)
-
-  local layTombol = LinearLayout(service).setOrientation(0).setPadding(0,10,0,0)
-  local btnSimpan = Button(service).setText("Simpan Konfigurasi")
-  btnSimpan.setOnClickListener(function() pesan("Pengaturan disimpan!") if mainDialog then mainDialog.dismiss() end end)
-  local btnBatal = Button(service).setText("Batal")
-  btnBatal.setOnClickListener(function() if mainDialog then mainDialog.dismiss() end end)
-  layTombol.addView(btnSimpan, LinearLayout.LayoutParams(0, -2, 1.0))
-  layTombol.addView(btnBatal, LinearLayout.LayoutParams(0, -2, 1.0))
-  lay.addView(layTombol)
+  addBtn("Simpan Konfigurasi", function() pesan("Pengaturan disimpan!") if mainDialog then mainDialog.dismiss() end end)
 
   mainDialog = showLocked(AlertDialog.Builder(service).setTitle("Menu Voice Input v4").setView(root))
-end
-
-local function runRevision(edit)
-  if not edit then pesan("Klik dulu di kotak teks!") return end
-  local currentText = ""
-  pcall(function()
-    if edit.getText() then currentText = tostring(edit.getText()) end
-  end)
-  if currentText == "" or currentText == "nil" then
-    pesan("Kotak teks kosong untuk direvisi!")
-    return
-  end
-  vibrate(60)
-  pesan("Sedang merapikan teks...")
-  processText(currentText, function(hasil)
-    service.insert(edit, hasil)
-    speakText(hasil)
-  end)
 end
 
 local function runSpeech(edit)
@@ -954,9 +709,7 @@ local function runSpeech(edit)
         local hasilSuara = tostring(list.get(0))
         processText(hasilSuara, function(hasil)
           service.insert(edit, hasil)
-          if getBool("use_auto_tts") then
-            speakText(hasil)
-          end
+          if getBool("use_auto_tts") then service.speak(hasil) end
         end)
       end
     end,
@@ -967,13 +720,9 @@ end
 
 local edit = service.getEditText()
 if edit then
-  if getBool("use_revision_mode") then
-    runRevision(edit)
-  elseif getBool("use_confirmation") then
-    showLocked(AlertDialog.Builder(service).setTitle("Pilih Tindakan").setItems({"Mulai Input Suara", "Revisi Teks Tersebut", "Buka Pengaturan"}, function(d, i)
-      if i == 0 then runSpeech(edit)
-      elseif i == 1 then runRevision(edit)
-      else showMain() end
+  if getBool("use_confirmation") then
+    showLocked(AlertDialog.Builder(service).setTitle("Pilih Tindakan").setItems({"Mulai Input Suara", "Buka Pengaturan"}, function(d, i)
+      if i == 0 then runSpeech(edit) else showMain() end
     end).setNegativeButton("Batal", nil))
   else runSpeech(edit) end
 else showMain() end
